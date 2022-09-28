@@ -234,6 +234,26 @@ WorleyInfo worley(vec3 p, float t) {
 }
 
 // =================================
+// NOISE PART 2
+// =================================
+
+const mat2 fbmRotateMat = mat2(
+  0.8, -0.6,
+  0.6, 0.8
+);
+
+float fbmRotate(vec2 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  for (int i = 0; i < FBM_OCTAVES; ++i) {
+    value += amplitude * ((perlin(p) + 1.0) / 2.0);
+    p = 2.0 * fbmRotateMat * p;
+    amplitude *= 0.5;
+  }
+  return value;
+}
+
+// =================================
 // SDF OPERATIONS
 // =================================
 
@@ -254,14 +274,12 @@ float sdfSmoothUnion(float d1, float d2, float k) {
   return mix(d2, d1, h) - k * h * (1.0 - h); 
 }
 
-float sdfSmoothSubtraction(float d1, float d2, float k)
-{
+float sdfSmoothSubtraction(float d1, float d2, float k) {
   float h = clamp(0.5 - 0.5 * (d2 + d1) / k, 0.0, 1.0 );
   return mix(d2, -d1, h) + k * h * (1.0 - h); 
 }
 
-float sdfSmoothIntersection(float d1, float d2, float k)
-{
+float sdfSmoothIntersection(float d1, float d2, float k) {
   float h = clamp(0.5 - 0.5 * (d2 - d1) / k, 0.0, 1.0);
   return mix(d2, d1, h) + k * h * (1.0 - h);
 }
@@ -290,9 +308,15 @@ float capsuleSDF(vec3 pos, vec3 a, vec3 b, float r) {
 // =================================
 
 float sceneSDF(vec3 pos) {
-  float mountainsNoise = fbm(pos.xz * 0.01);
-  mountainsNoise = 4.0 * pow(mountainsNoise - 0.5, 2.0);
-  return planeSDF(pos, -60.0 + mountainsNoise * 250.0);
+  // float mountainsNoise = fbm(pos.xz * 0.01);
+  // mountainsNoise = 4.0 * pow(mountainsNoise - 0.5, 2.0);
+  // return planeSDF(pos, -60.0 + mountainsNoise * 250.0);
+
+  return planeSDF(pos, -60.0 + fbmRotate(pos.xz * 0.01) * 50.0);
+}
+
+float getTerrainHeight(vec2 pos) {
+  return -20.0 + perlin(pos * 0.1) * 20.0;
 }
 
 // =================================
@@ -311,43 +335,82 @@ vec3 getRay(vec2 ndc) {
 
 struct Intersection {
   vec3 pos;
-  float dist;
+  float t;
 };
+
+// Intersection rayMarch(vec2 ndc) {
+//   vec3 ray = getRay(ndc);
+//   Intersection intersection;
+
+//   vec3 currentPos = u_Eye;
+//   float distTraveled = 0.0;
+//   for (int i = 0; i < MAX_RAY_STEPS; ++i) {
+//     float distToSurface = sceneSDF(currentPos);
+
+//     float epsilonMultiplier = 100.0 * (distTraveled / MAX_DISTANCE) + 1.0;
+//     if (distToSurface < EPSILON * epsilonMultiplier) {
+//       intersection.pos = currentPos;
+//       intersection.dist = distTraveled;
+//       return intersection;
+//     }
+
+//     currentPos += ray * distToSurface;
+//     distTraveled += distToSurface;
+
+//     if (distTraveled > MAX_DISTANCE) {
+//       break;
+//     }
+//   }
+
+//   intersection.dist = -1.0;
+//   return intersection;
+// }
+
+const float initialDt = 0.2;
 
 Intersection rayMarch(vec2 ndc) {
   vec3 ray = getRay(ndc);
   Intersection intersection;
 
-  vec3 currentPos = u_Eye;
-  float distTraveled = 0.0;
-  for (int i = 0; i < MAX_RAY_STEPS; ++i) {
-    float distToSurface = sceneSDF(currentPos);
+  float dt = initialDt;
+  const float mint = 0.01;
+  const float maxt = 150.0;
 
-    float epsilonMultiplier = 100.0 * (distTraveled / MAX_DISTANCE) + 1.0;
-    if (distToSurface < EPSILON * epsilonMultiplier) {
-      intersection.pos = currentPos;
-      intersection.dist = distTraveled;
+  float lastHeight = 0.0;
+  float lastY = 0.0;
+  
+  for (float t = mint; t < maxt; t += dt) {
+    vec3 p = u_Eye + ray * t;
+    float height = getTerrainHeight(p.xz);
+    if (p.y < height) {
+      intersection.t = t - dt + dt * (lastHeight - lastY) / (p.y - lastY - height + lastHeight);
+      intersection.pos = u_Eye + ray * intersection.t;
       return intersection;
     }
 
-    currentPos += ray * distToSurface;
-    distTraveled += distToSurface;
-
-    if (distTraveled > MAX_DISTANCE) {
-      break;
-    }
+    dt = initialDt * t;
+    lastHeight = height;
+    lastY = p.y;
   }
 
-  intersection.dist = -1.0;
+  intersection.t = -1.0;
   return intersection;
 }
 
+// vec3 estimateNormal(vec3 p) {
+//     return normalize(vec3(
+//         sceneSDF(vec3(p.x + EPSILON, p.y, p.z)) - sceneSDF(vec3(p.x - EPSILON, p.y, p.z)),
+//         sceneSDF(vec3(p.x, p.y + EPSILON, p.z)) - sceneSDF(vec3(p.x, p.y - EPSILON, p.z)),
+//         sceneSDF(vec3(p.x, p.y, p.z + EPSILON)) - sceneSDF(vec3(p.x, p.y, p.z - EPSILON))
+//     ));
+// }
+
 vec3 estimateNormal(vec3 p) {
-    return normalize(vec3(
-        sceneSDF(vec3(p.x + EPSILON, p.y, p.z)) - sceneSDF(vec3(p.x - EPSILON, p.y, p.z)),
-        sceneSDF(vec3(p.x, p.y + EPSILON, p.z)) - sceneSDF(vec3(p.x, p.y - EPSILON, p.z)),
-        sceneSDF(vec3(p.x, p.y, p.z + EPSILON)) - sceneSDF(vec3(p.x, p.y, p.z - EPSILON))
-    ));
+  return normalize(vec3(
+    getTerrainHeight(vec2(p.x - EPSILON, p.z)) - getTerrainHeight(vec2(p.x + EPSILON, p.z)),
+    2.0 * EPSILON,
+    getTerrainHeight(vec2(p.x, p.z - EPSILON)) - getTerrainHeight(vec2(p.x, p.z + EPSILON))
+  ));
 }
 
 struct DirectionalLight {
@@ -371,6 +434,8 @@ const vec3 rockColor2 = vec3(89.0, 96.0, 97.0) / 255.0;
 const vec3 iceColor = vec3(219.0, 241.0, 253.0) / 255.0;
 
 vec3 getTerrainColor(vec3 pos) {
+  return vec3(1.0, 0.0, 0.0);
+
   float grassNoise = perlin(pos * 0.7);
   vec3 grassColor = mix(grassColor1, grassColor2, grassNoise);
 
@@ -391,7 +456,7 @@ vec3 getSkyColor(vec2 ndc) {
 vec3 getColor(vec2 ndc) {
   Intersection isect = rayMarch(ndc);
 
-  if (isect.dist > 0.0) {
+  if (isect.t > 0.0) {
     vec3 nor = estimateNormal(isect.pos);
 
     vec3 terrainColor = getTerrainColor(isect.pos);
